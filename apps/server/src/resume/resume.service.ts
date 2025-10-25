@@ -14,6 +14,7 @@ import deepmerge from "deepmerge";
 import { PrismaService } from "nestjs-prisma";
 
 import { PrinterService } from "@/server/printer/printer.service";
+import { OcrService } from "./ocr.service";
 
 import { StorageService } from "../storage/storage.service";
 
@@ -23,6 +24,7 @@ export class ResumeService {
     private readonly prisma: PrismaService,
     private readonly printerService: PrinterService,
     private readonly storageService: StorageService,
+    private readonly ocrService: OcrService,
   ) {}
 
   async create(userId: string, createResumeDto: CreateResumeDto) {
@@ -46,22 +48,207 @@ export class ResumeService {
     });
   }
 
-  import(userId: string, importResumeDto: ImportResumeDto) {
+  async import(userId: string, importResumeDto: ImportResumeDto) {
+    const randomTitle = generateRandomName();
+    const slug = slugify(importResumeDto.title ?? randomTitle);
+
+    return await this.prisma.resume.create({
+        data: {
+          userId,
+          visibility: "private",
+          data: importResumeDto.data,
+          title: importResumeDto.title ?? randomTitle,
+          slug,
+        },
+      });
+  }
+
+  async importFromFile(userId: string, file: Express.Multer.File) {
+    const mime = file.mimetype.toLowerCase();
+    Logger.log(`Processing uploaded file: ${file.originalname} (${mime})`);
+
+    let text = "";
+
+    if (mime.includes("pdf")) {
+      Logger.log("Extracting text from PDF...");
+
+      // Try to require pdf-parse and handle CJS/ESM shapes
+      let pdfParseFunc: ((buffer: Buffer) => Promise<any>) | null = null;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const _pdfParse = require("pdf-parse");
+        pdfParseFunc = typeof _pdfParse === "function" ? _pdfParse : (_pdfParse && typeof _pdfParse.default === "function" ? _pdfParse.default : null);
+      } catch (e1) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const _pdfParse = require("pdf-parse/lib/pdf-parse.js");
+          pdfParseFunc = typeof _pdfParse === "function" ? _pdfParse : null;
+        } catch (e2) {
+          Logger.warn("pdf-parse not available via standard paths");
+          pdfParseFunc = null;
+        }
+      }
+
+      if (pdfParseFunc) {
+        try {
+          const result = await pdfParseFunc(file.buffer);
+          text = result?.text ?? "";
+          Logger.log(`PDF text extraction completed. Extracted ${text.length} characters.`);
+        } catch (err) {
+          Logger.error("pdf-parse invocation failed:", err);
+          text = "";
+        }
+      } else {
+        Logger.warn("pdf-parse not installed or couldn't be resolved; skipping pdf-parse step");
+      }
+
+      // Fallback to OCR for scanned PDFs with no extractable text
+      if (!text || text.trim().length < 20) {
+        Logger.log("PDF has little extractable text, attempting OCR fallback (local Tesseract)...");
+        try {
+          const ocrText = await this.ocrPdfBuffer(file.buffer);
+          if (ocrText) {
+            text = ocrText;
+            Logger.log(`OCR fallback extracted ${text.length} characters.`);
+          }
+        } catch (ocrErr) {
+          Logger.warn("OCR fallback failed:", ocrErr);
+        }
+      }
+    } else if (mime.includes("word") || mime.includes("officedocument")) {
+      Logger.log("Extracting text from Word document...");
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const mammoth = require("mammoth");
+        const result = await mammoth.extractRawText({ buffer: file.buffer });
+        text = result?.value ?? "";
+        Logger.log(`Word document text extraction completed. Extracted ${text.length} characters.`);
+      } catch (err) {
+        Logger.error("Word document parsing failed:", err);
+        throw new BadRequestException("Failed to parse Word document. Please ensure it's a valid .docx file.");
+      }
+    } else if (mime.startsWith("image/")) {
+      Logger.log("Running OCR on uploaded image...");
+      try {
+        const ocrText = await this.ocrService.recognizeImageBuffer(file.buffer);
+        text = ocrText ?? "";
+        Logger.log(`Image OCR completed. Extracted ${text.length} characters.`);
+      } catch (err) {
+        Logger.error("Image OCR failed:", err);
+        throw new BadRequestException("Failed to OCR the uploaded image.");
+      }
+    } else {
+      throw new BadRequestException(
+        "Unsupported file. Please upload a PDF (.pdf), Word document (.docx) or image.",
+      );
+    }
+
+    if (!text || !text.trim()) {
+      Logger.error("No extractable text found after parsing and OCR fallback");
+      throw new BadRequestException("Failed to extract text from the provided file. Please try a different file or enable OCR.");
+    }
+
+    const summary = text.trim().split(/\n{2,}/)[0]?.slice(0, 1200) ?? "Imported resume";
     const randomTitle = generateRandomName();
 
-    return this.prisma.resume.create({
+  // Use the original filename without extension as the title
+  const baseTitle = file.originalname.replace(/\.[^/.]+$/, "");
+  
+  // Find a unique title/slug combination
+  let title = baseTitle;
+  let counter = 1;
+  let slug = slugify(title);
+  
+  while (true) {
+    try {
+      const exists = await this.prisma.resume.findFirst({
+        where: { userId, slug },
+      });
+      
+      if (!exists) break;
+      
+      title = `${baseTitle} (${counter})`;
+      slug = slugify(title);
+      counter++;
+    } catch (error) {
+      Logger.error('Error checking for duplicate slug:', error);
+      break;
+    }
+  }
+  
+  Logger.log(`Creating resume with title: ${title}`);
+
+    const data: ResumeData = {
+      ...defaultResumeData,
+      basics: {
+        ...defaultResumeData.basics,
+        headline: summary,
+      },
+    };
+
+    const resume = await this.prisma.resume.create({
       data: {
         userId,
         visibility: "private",
-        data: importResumeDto.data,
-        title: importResumeDto.title ?? randomTitle,
-        slug: importResumeDto.slug ?? slugify(randomTitle),
+        data,
+        title,
+        slug,
       },
     });
+
+    Logger.log(`Resume created successfully with ID: ${resume.id}`);
+    return resume;
   }
 
   findAll(userId: string) {
     return this.prisma.resume.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } });
+  }
+
+  private async ocrPdfBuffer(buffer: Buffer): Promise<string> {
+    try {
+      Logger.log("Attempting OCR for PDF using local Tesseract...");
+      
+      // Convert PDF to images using pdf2pic
+      const pdf2pic = require("pdf2pic");
+      const convert = pdf2pic.fromBuffer(buffer, {
+        density: 100,
+        saveFilename: "page",
+        savePath: "/tmp",
+        format: "png",
+        width: 2000,
+        height: 2000
+      });
+
+      const results = await convert.bulk(-1, true);
+      
+      if (!results || results.length === 0) {
+        Logger.warn("No pages converted from PDF");
+        return "";
+      }
+
+      let extractedText = "";
+      
+      // Process each page with local Tesseract
+      for (const result of results) {
+        if (result && result.base64) {
+          const imageBuffer = Buffer.from(result.base64, 'base64');
+          try {
+            const pageText = await this.ocrService.recognizeImageBuffer(imageBuffer);
+            if (pageText) {
+              extractedText += pageText + "\n";
+            }
+          } catch (ocrError) {
+            Logger.warn("Tesseract OCR failed for page:", ocrError);
+          }
+        }
+      }
+      
+      Logger.log(`OCR completed. Extracted ${extractedText.length} characters.`);
+      return extractedText.trim();
+    } catch (error) {
+      Logger.error("OCR processing failed:", error);
+      return "";
+    }
   }
 
   findOne(id: string, userId?: string) {
@@ -115,7 +302,7 @@ export class ResumeService {
           title: updateResumeDto.title,
           slug: updateResumeDto.slug,
           visibility: updateResumeDto.visibility,
-          data: updateResumeDto.data as Prisma.JsonObject,
+          data: updateResumeDto.data as any,
         },
         where: { userId_id: { userId, id } },
       });

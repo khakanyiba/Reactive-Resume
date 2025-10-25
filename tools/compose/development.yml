@@ -62,7 +62,66 @@ services:
       PROXY_HOST: "localhost"
       PROXY_PORT: ${CHROME_PORT:-8080}
       PROXY_SSL: "false"
+      
+  # OCR Service (Tesseract)
+  ocr:
+    build:
+      context: ../ocr
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8082:3000"
+
+  # Server app (builds from repository)
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: reactive-resume-local:latest
+    restart: unless-stopped
+    ports:
+      - ${PORT:-3000}:3000
+    depends_on:
+      - postgres
+      - minio
+      - chrome
+      - ocr
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+
+      # URLs
+      PUBLIC_URL: http://localhost:3000
+      STORAGE_URL: http://localhost:9000/default
+
+      # OCR Service
+      OCR_URL: http://ocr:3000
+
+      # Printer (Chrome)
+      CHROME_TOKEN: ${CHROME_TOKEN:-chrome_token}
+      CHROME_URL: ws://chrome:3000
+
+      # Database (Postgres)
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+
+      # Auth
+      ACCESS_TOKEN_SECRET: access_token_secret
+      REFRESH_TOKEN_SECRET: refresh_token_secret
+
+      # Mail
+      MAIL_FROM: noreply@localhost
+
+      # Storage (Minio)
+      STORAGE_ENDPOINT: minio
+      STORAGE_PORT: 9000
+      STORAGE_REGION: us-east-1
+      STORAGE_BUCKET: default
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_USE_SSL: "false"
+      STORAGE_SKIP_BUCKET_CHECK: "false"
 
 volumes:
   minio_data:
   postgres_data:
+  tesseract_data:

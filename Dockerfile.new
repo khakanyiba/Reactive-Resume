@@ -7,6 +7,16 @@ ARG NX_CLOUD_ACCESS_TOKEN
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 
+# Install system dependencies required for pdf-parse and other tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3 \
+    make \
+    g++ \
+    dumb-init \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN corepack enable
 
 WORKDIR /app
@@ -17,7 +27,10 @@ ARG NX_CLOUD_ACCESS_TOKEN
 
 COPY .npmrc package.json pnpm-lock.yaml ./
 COPY ./tools/prisma /app/tools/prisma
-RUN pnpm install --no-frozen-lockfile
+
+# Force install pdf-parse and its dependencies
+RUN pnpm install pdf-parse@2.3.5 --no-frozen-lockfile && \
+    pnpm install --no-frozen-lockfile
 
 COPY . .
 
@@ -29,10 +42,11 @@ RUN pnpm run build
 FROM base AS release
 ARG NX_CLOUD_ACCESS_TOKEN
 
-RUN apt update && apt install -y dumb-init --no-install-recommends && rm -rf /var/lib/apt/lists/*
-
 COPY --chown=node:node --from=build /app/.npmrc /app/package.json /app/pnpm-lock.yaml ./
-RUN pnpm install --prod --no-frozen-lockfile
+
+# Ensure pdf-parse and other dependencies are installed in production
+RUN pnpm install pdf-parse@2.3.5 --no-frozen-lockfile && \
+    pnpm install --prod --no-frozen-lockfile
 
 COPY --chown=node:node --from=build /app/dist ./dist
 COPY --chown=node:node --from=build /app/tools/prisma ./tools/prisma
@@ -41,6 +55,8 @@ RUN pnpm run prisma:generate
 ENV TZ=UTC
 ENV PORT=3000
 ENV NODE_ENV=production
+# Configure OCR URL for local Tesseract
+ENV OCR_URL=http://localhost:3000/api/ocr
 
 EXPOSE 3000
 

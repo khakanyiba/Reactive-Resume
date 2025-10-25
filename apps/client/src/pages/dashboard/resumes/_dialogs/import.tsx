@@ -47,6 +47,8 @@ enum ImportType {
   "reactive-resume-v3-json" = "reactive-resume-v3-json",
   "json-resume-json" = "json-resume-json",
   "linkedin-data-export-zip" = "linkedin-data-export-zip",
+  "pdf" = "pdf",
+  "docx" = "docx",
 }
 
 const formSchema = z.object({
@@ -94,6 +96,8 @@ export const ImportDialog = () => {
   const accept = useMemo(() => {
     if (filetype.includes("json")) return ".json";
     if (filetype.includes("zip")) return ".zip";
+    if (filetype === ImportType.pdf) return ".pdf";
+    if (filetype === ImportType.docx) return ".docx";
     return "";
   }, [filetype]);
 
@@ -131,6 +135,11 @@ export const ImportDialog = () => {
         const result = await parser.validate(data);
 
         setValidationResult({ isValid: true, type, result });
+      }
+
+      if (type === ImportType.pdf || type === ImportType.docx) {
+        // For binary uploads, we don't validate client-side; defer to server
+        setValidationResult({ isValid: true, type, result: {} as ResumeData });
       }
     } catch (error) {
       if (error instanceof ZodError) {
@@ -179,6 +188,29 @@ export const ImportDialog = () => {
         const data = parser.convert(validationResult.result as LinkedIn);
 
         await importResume({ data });
+      }
+
+      if (type === ImportType.pdf || type === ImportType.docx) {
+        const formData = new FormData();
+        const { file } = formSchema.parse(form.getValues());
+        formData.append("file", file);
+
+        const response = await fetch("/api/resume/import-file", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Upload failed: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        
+        toast({
+          variant: "success",
+          title: t`File uploaded successfully!`,
+          description: t`Your ${type === ImportType.pdf ? 'PDF' : 'Word document'} has been processed and imported as a new resume.`,
+        });
       }
 
       close();
@@ -239,6 +271,10 @@ export const ImportDialog = () => {
                         <SelectItem value="linkedin-data-export-zip">
                           LinkedIn Data Export (.zip)
                         </SelectItem>
+                      {/* eslint-disable-next-line lingui/no-unlocalized-strings */}
+                      <SelectItem value="pdf">PDF (.pdf)</SelectItem>
+                      {/* eslint-disable-next-line lingui/no-unlocalized-strings */}
+                      <SelectItem value="docx">Microsoft Word (.docx)</SelectItem>
                       </SelectContent>
                     </Select>
                   </FormControl>
@@ -270,7 +306,7 @@ export const ImportDialog = () => {
                       {t({
                         message: `Accepts only ${accept} files`,
                         comment:
-                          "Helper text to let the user know what filetypes are accepted. {accept} can be .pdf or .json.",
+                          "Helper text to let the user know what filetypes are accepted. {accept} can be .pdf, .docx, or .json.",
                       })}
                     </FormDescription>
                   )}

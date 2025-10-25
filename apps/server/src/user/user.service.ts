@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from "@nestjs/common";
-import { Prisma, User } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { User } from "@prisma/client";
 import { UserWithSecrets } from "@reactive-resume/dto";
 import { ErrorMessage } from "@reactive-resume/utils";
 import { PrismaService } from "nestjs-prisma";
@@ -70,17 +71,17 @@ export class UserService {
     return user;
   }
 
-  create(data: Prisma.UserCreateInput): Promise<UserWithSecrets> {
+  create(data: any): Promise<UserWithSecrets> {
     return this.prisma.user.create({ data, include: { secrets: true } });
   }
 
-  updateByEmail(email: string, data: Prisma.UserUpdateArgs["data"]): Promise<User> {
+  updateByEmail(email: string, data: any): Promise<User> {
     return this.prisma.user.update({ where: { email }, data });
   }
 
   async updateByResetToken(
     resetToken: string,
-    data: Prisma.SecretsUpdateArgs["data"],
+    data: any,
   ): Promise<void> {
     await this.prisma.secrets.update({ where: { resetToken }, data });
   }

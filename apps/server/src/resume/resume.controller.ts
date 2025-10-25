@@ -9,10 +9,13 @@ import {
   Param,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiTags } from "@nestjs/swagger";
-import { User as UserEntity } from "@prisma/client";
+import type { User as UserEntity } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import {
   CreateResumeDto,
@@ -32,11 +35,19 @@ import { TwoFactorGuard } from "../auth/guards/two-factor.guard";
 import { Resume } from "./decorators/resume.decorator";
 import { ResumeGuard } from "./guards/resume.guard";
 import { ResumeService } from "./resume.service";
+import { OcrService } from "./ocr.service";
+import { ParserService } from "./parser.service";
+import { ExportService } from "./export.service";
 
 @ApiTags("Resume")
 @Controller("resume")
 export class ResumeController {
-  constructor(private readonly resumeService: ResumeService) {}
+  constructor(
+    private readonly resumeService: ResumeService,
+    private readonly ocrService: OcrService,
+    private readonly parserService: ParserService,
+    private readonly exportService: ExportService,
+  ) {}
 
   @Get("schema")
   getSchema() {
@@ -72,6 +83,71 @@ export class ResumeController {
       Logger.error(error);
       throw new InternalServerErrorException(error);
     }
+  }
+
+  @Post("import-file")
+  @UseGuards(TwoFactorGuard)
+  @UseInterceptors(FileInterceptor("file"))
+  async importFile(@User() user: UserEntity, @UploadedFile("file") file: Express.Multer.File) {
+    try {
+      if (!file) throw new BadRequestException("No file provided");
+
+      // Allow images to be OCR'd directly
+      const mime = file.mimetype.toLowerCase();
+      if (mime.startsWith("image/")) {
+        const text = await this.ocrService.recognizeImageBuffer(file.buffer);
+        const parsed = this.parserService.parse(text);
+        return { text, parsed };
+      }
+
+      return await this.resumeService.importFromFile(user.id, file);
+    } catch (error) {
+      Logger.error(error);
+      throw new InternalServerErrorException(error);
+    }
+  }
+
+  @Post("ocr")
+  @UseGuards(TwoFactorGuard)
+  @UseInterceptors(FileInterceptor("file"))
+  async ocr(@UploadedFile("file") file: Express.Multer.File) {
+    if (!file) throw new BadRequestException("No file provided");
+
+    const text = await this.ocrService.recognizeImageBuffer(file.buffer);
+    return { text };
+  }
+
+  @Post("parse")
+  @UseGuards(TwoFactorGuard)
+  async parse(@Body() body: { text: string }) {
+    if (!body || !body.text) throw new BadRequestException("No text provided");
+
+    const parsed = this.parserService.parse(body.text);
+    return parsed;
+  }
+
+  
+
+  @Post('preview/template')
+  @UseGuards(TwoFactorGuard)
+  async previewTemplate(@Body() body: { data: any; template?: 'ats'|'modern'|'creative' }) {
+    const html = this.exportService.renderTemplateHtml(body.data, body.template ?? 'ats');
+    return { html };
+  }
+
+  @Post('export/pdf')
+  @UseGuards(TwoFactorGuard)
+  async exportPdf(@Body() body: { data: any }) {
+    const html = this.exportService.renderTemplateHtml(body.data, 'ats');
+    const buffer = await this.exportService.htmlToPdfBuffer(html);
+    return { buffer: buffer.toString('base64') };
+  }
+
+  @Post('export/docx')
+  @UseGuards(TwoFactorGuard)
+  async exportDocx(@Body() body: { data: any }) {
+    const buffer = await this.exportService.toDocxBuffer(body.data);
+    return { buffer: buffer.toString('base64') };
   }
 
   @Get()

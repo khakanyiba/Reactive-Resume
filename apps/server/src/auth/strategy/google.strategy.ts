@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { PassportStrategy } from "@nestjs/passport";
 import { createId } from "@paralleldrive/cuid2";
-import { User } from "@prisma/client";
+import type { User } from "@prisma/client";
 import { ErrorMessage, processUsername } from "@reactive-resume/utils";
 import { Profile, Strategy, StrategyOptions, VerifyCallback } from "passport-google-oauth20";
 
